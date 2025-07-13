@@ -14,7 +14,7 @@ import MessageList from '../components/MessageList';
 import { Message } from '../types';
 import { useTheme } from '../contexts/ThemeContext';
 import SendSvg from '../../images/Send';
-import { sendChatMessage } from '../services/api';
+import { useSendChatMessageMutation } from '../services/api'; // Import the new mutation hook
 
 const CssTextField = styled(TextField)(
   ({
@@ -59,10 +59,12 @@ export const Chat = () => {
   const theme = useMuiTheme();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
+  // const [isLoading, setIsLoading] = useState(false); // Removed: will use isPending from useMutation
   const [isAtBottom, setIsAtBottom] = useState(true);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const { mutateAsync: sendMessage, isPending } = useSendChatMessageMutation(); // Use the mutation hook
 
   const handleScroll = () => {
     if (chatContainerRef.current) {
@@ -86,7 +88,6 @@ export const Chat = () => {
     };
   }, []);
 
-  // Auto-scroll only for new messages
   useEffect(() => {
     if (chatContainerRef.current && messages.length > 0) {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
@@ -101,7 +102,7 @@ export const Chat = () => {
   }, []);
 
   const handleSend = async () => {
-    if (!input.trim() || isLoading) return;
+    if (!input.trim() || isPending) return; // Use isPending
 
     const userMessage: Message = {
       id: Date.now(),
@@ -110,12 +111,12 @@ export const Chat = () => {
     };
 
     setMessages((prev) => [...prev, userMessage]);
+    const currentInput = input; // Store input before clearing
     setInput('');
-    setIsLoading(true);
     const requestStartTime = Date.now();
 
     try {
-      const data = await sendChatMessage(input);
+      const data = await sendMessage(currentInput); // Call mutateAsync
       const assistantMessage: Message = {
         id: Date.now() + 1,
         content: data.response,
@@ -123,19 +124,19 @@ export const Chat = () => {
         source: data.source,
         responseTime: Date.now() - requestStartTime,
       };
-
       setMessages((prev) => [...prev, assistantMessage]);
     } catch (error) {
       console.error('Error sending message:', error);
+      const errorMessageContent = error instanceof Error ? error.message : 'Sorry, there was an error processing your message.';
       const errorMessage: Message = {
         id: Date.now() + 1,
-        content: 'Sorry, there was an error processing your message.',
+        content: errorMessageContent,
         role: 'assistant',
+        isError: true, // Optional: add an isError flag for styling
       };
       setMessages((prev) => [...prev, errorMessage]);
-    } finally {
-      setIsLoading(false);
     }
+    // No finally block needed for setIsLoading(false) as isPending handles this
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -207,7 +208,7 @@ export const Chat = () => {
               },
             }}
           >
-            <MessageList messages={messages} isLoading={isLoading} />
+            <MessageList messages={messages} isLoading={isPending} /> {/* Use isPending */}
           </Box>
         </Box>
       )}
@@ -247,18 +248,18 @@ export const Chat = () => {
                 <InputAdornment position='start'>
                   <Button
                     onClick={handleSend}
-                    disabled={!input.trim() || isLoading}
+                    disabled={!input.trim() || isPending} // Use isPending
                     sx={{
                       minWidth: 'auto',
                       borderRadius: '50%',
-                      ...((input.trim() || !isLoading) && {
+                      ...((input.trim() || !isPending) && { // Use isPending
                         '&:hover': {
                           backgroundColor: 'rgba(240, 203, 12, 0.16)',
                         },
                       }),
                     }}
                   >
-                    {!input.trim() || isLoading ? (
+                    {!input.trim() || isPending ? ( // Use isPending
                       <SendSvg color={isDarkMode ? '#656359' : '#E3E0D5'} />
                     ) : (
                       <SendActive />
