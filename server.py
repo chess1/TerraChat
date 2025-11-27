@@ -1,6 +1,8 @@
 import re
 import time
 import uvicorn
+import asyncio
+import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,6 +20,7 @@ from prompts import contextualize_q_prompt
 from rate_limiter import RateLimiterLLMChain
 from tools import get_weather
 from utils.logger import log
+from mcp_client import call_mcp_tool
 
 
 app = FastAPI()
@@ -62,8 +65,21 @@ def add_message_to_history(message_type: str, message: str, source: str = ""):
 
 
 # Available actions are:
-available_actions = {"get_weather": get_weather}
-available_tools = [get_weather]
+async def search_figma(query: str):
+    figma_server_path = os.environ.get(
+        "FIGMA_MCP_SERVER_PATH", "mcp_servers/figma/dist/index.js"
+    )
+    if not is_env_var_set("FIGMA_API_KEY"):
+        log.warning("FIGMA_API_KEY is not set. The Figma MCP server will not be able to authenticate.")
+        return "FIGMA_API_KEY is not set. The Figma MCP server is not available."
+    return await call_mcp_tool(
+        figma_server_path,
+        "figma_get_file",
+        {"query": query, "as_md": True},
+    )
+
+available_actions = {"get_weather": get_weather, "search_figma": search_figma}
+available_tools = [get_weather, search_figma]
 
 # Initialize components for dynamic message retrieval - Memory feature
 text_splitter = RecursiveCharacterTextSplitter(
@@ -194,11 +210,13 @@ async def ask_question(user_input: UserInput):
     log.info(f"Received question: {user_question}")
 
     user_prompt = handle_user_input(user_question)
-    response, model_name = generate_response(user_prompt, app.state.llm_chains)
+    response, model_name = await generate_response(user_prompt, app.state.llm_chains)
     if not response:
         response = "No available LLM chain could provide a response."
         log.info(response)
         return {"response": response, "source": ""}
+
+    response = await process_response(response)
 
     log.info(f"Final response: {response}")
     try:
@@ -219,23 +237,23 @@ def handle_user_input(user_question: str):
     }
 
 
-def generate_response(user_prompt, chains):
+async def generate_response(user_prompt, chains):
     for llm_chain in chains:
         if llm_chain.is_in_cooldown():
             log.info(f"Skipping {llm_chain.model_name} due to cooldown.")
             continue
 
-        response = llm_chain.run_invoke(user_prompt)
+        response = await asyncio.to_thread(llm_chain.run_invoke, user_prompt)
         if response:
             model_name = llm_chain.model_name
             log.info(f"Response from {model_name=}: {response}")
             app.state.model_name = model_name
-            return process_response(response), model_name
+            return response, model_name
     log.warning("No available LLM chain could provide a response.")
     return "No available LLM chain could provide a response.", ""
 
 
-def process_response(response):
+async def process_response(response):
     max_turns = 3
     turn_count = 1
     while turn_count < max_turns:
@@ -266,12 +284,14 @@ def process_response(response):
 
         log.info(f" -- running {function_name} {function_params}")
         result = available_actions[function_name](**function_params)
-        response = run_chains_with_function_result(result, app.state.llm_chains)
+        if asyncio.iscoroutine(result):
+            result = await result
+        response = await run_chains_with_function_result(result, app.state.llm_chains)
         turn_count += 1
     return response
 
 
-def run_chains_with_function_result(result, chains):
+async def run_chains_with_function_result(result, chains):
     function_result_message = f"Action_Response: {result}"
     log.info(function_result_message)
     user_prompt = {
@@ -279,7 +299,7 @@ def run_chains_with_function_result(result, chains):
         "chat_history": app.state.chat_history,
     }
     for llm_chain in chains:
-        response = llm_chain.run_invoke(user_prompt)
+        response = await asyncio.to_thread(llm_chain.run_invoke, user_prompt)
         if response:
             # Successfully invoked a chain, exit loop
             return response
