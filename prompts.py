@@ -24,6 +24,10 @@ react_system_prompt = """
   get_weather:
   Example: get_weather: Los Angeles
   Returns the current weather state for the specified city.
+
+  search_figma:
+  Example: search_figma: Get the landing page design
+  Returns information about Figma files matching the query.
   
   Example sessions:
   Example session 1:
